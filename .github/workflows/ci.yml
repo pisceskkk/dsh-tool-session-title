@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: smoke (Windows, Node 24)
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Show tool versions
+        shell: pwsh
+        run: |
+          node --version
+          $PSVersionTable.PSVersion
+          (Get-Command powershell.exe).Source
+
+      - name: Syntax check
+        shell: pwsh
+        run: |
+          node --check src/lib/index.js
+          node --check test/smoke.mjs
+
+      - name: Smoke test
+        shell: pwsh
+        run: node test/smoke.mjs
+
+      - name: Installer dry run writes nothing
+        shell: pwsh
+        run: |
+          $tmp = Join-Path $env:RUNNER_TEMP ('profile-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+          New-Item -ItemType Directory -Force (Join-Path $tmp 'node_modules\@deepseek-ai') | Out-Null
+          $patch = @'
+- insert:
+    - id: existing
+      name: "existing-package"
+'@
+          $patchFile = Join-Path $tmp 'cordis.patch.yml'
+          [System.IO.File]::WriteAllText($patchFile, $patch, (New-Object System.Text.UTF8Encoding($false)))
+          $before = (Get-FileHash -LiteralPath $patchFile).Hash
+          ./scripts/install.ps1 -ProfilePath $tmp -WhatIf
+          $after = (Get-FileHash -LiteralPath $patchFile).Hash
+          if ($before -ne $after) { throw 'WhatIf modified the patch file' }
+          if (Test-Path (Join-Path $tmp 'node_modules\@deepseek-ai\dsh-tool-session-title')) {
+            throw 'WhatIf created the package directory'
+          }
+          Remove-Item -Recurse -Force $tmp

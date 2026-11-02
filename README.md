@@ -1,5 +1,7 @@
 # dsh-tool-session-title
 
+[![CI](https://github.com/pisceskkk/dsh-tool-session-title/actions/workflows/ci.yml/badge.svg)](https://github.com/pisceskkk/dsh-tool-session-title/actions/workflows/ci.yml)
+
 让 **agent 自己管理会话标题** 的 DeepSeek Harness（DSH）插件。
 
 DSH 原生只有"自动生成标题"和"用户在 UI 里重命名"两条路径，模型侧没有任何读写标题的工具。本插件补上这一层：给模型两个工具，并配一段系统提示词，让它在主要目标明确后把会话名改成 `<type>(<scope>): <主题>` 的约定格式。
@@ -66,8 +68,10 @@ src/
   README.md             # 包级说明
 scripts/install.ps1     # 安装 / 回滚（PS 5.1 + 7）
 test/smoke.mjs          # 30 项冒烟测试
+.github/workflows/ci.yml  # Windows runner：语法检查 + 冒烟 + 安装 dry-run
 REQUIREMENTS.md         # 需求基线
 design/                 # 设计、schema 规则、修复记录
+LICENSE                 # MIT
 ```
 
 ## 设计文档
@@ -79,4 +83,4 @@ design/                 # 设计、schema 规则、修复记录
 
 ## License
 
-未声明。使用前请与作者确认。
+[MIT](LICENSE) © 2026 Qiu Chunshuo
