@@ -1,85 +1,127 @@
+English | [中文](README.zh-CN.md)
+
 # dsh-tool-session-title
 
 [![CI](https://github.com/pisceskkk/dsh-tool-session-title/actions/workflows/ci.yml/badge.svg)](https://github.com/pisceskkk/dsh-tool-session-title/actions/workflows/ci.yml)
 
-让 **agent 自己管理会话标题** 的 DeepSeek Harness（DSH）插件。
+A DeepSeek Harness (DSH) plugin that enables the AI agent to actively manage its own session title.
 
-DSH 原生只有"自动生成标题"和"用户在 UI 里重命名"两条路径，模型侧没有任何读写标题的工具。本插件补上这一层：给模型两个工具，并配一段系统提示词，让它在主要目标明确后把会话名改成 `<type>(<scope>): <主题>` 的约定格式。
+## The Problem
 
-## 提供什么
+In vanilla DeepSeek Harness, session titles can only be generated automatically by the model provider or manually renamed by users through the GUI. The model has no tools to inspect or update the session title. Furthermore, session title events in DSH are `log-only`—they are recorded in event logs but are never injected into the model's conversation context. Consequently, the agent cannot perceive its current title, cannot align it with the task's primary goal, and cannot calibrate itself across context compactions without dedicated tools.
 
-| 名称 | 类型 | 作用 |
+## What It Provides
+
+| Component | Kind | Description |
 |---|---|---|
-| `set_session_title(title)` | 工具 | 设置当前会话标题；返回 `previous` / `current`；写入后标题被 **pin**，自动标题停止覆盖 |
-| `get_session_title()` | 工具 | 读当前标题与来源（`fallback` / `provider` / `user`），供模型在上下文压缩后自校准 |
-| `tool:set_session_title` | 提示词段 | 命名规范：类型枚举、scope、80 字节 / 50 字符上限、set-once、子会话跳过 |
+| `set_session_title(title)` | Tool | Sets the title of the current session. Returns `{ unchanged, previous, current }`. Once set, the title is **pinned** (`source: user`), preventing automatic provider titles from overwriting it. |
+| `get_session_title()` | Tool | Returns `{ title, source }` (`fallback` / `provider` / `user` / `null`) for the current session, enabling self-calibration and inspection. |
+| `tool:set_session_title` | System prompt section | Teaches the agent the `<type>(<scope>): <subject>` convention, byte/character limits, once-per-theme usage, and skipping child sessions. Registered at order `2305` and rendered only when the tool is visible. |
 
-行为要点：
+## Behavior and Guarantees
 
-- **只在调用方会话生效**（`exec.agent.session`），不接受 sessionId，无法改别人的会话。
-- **子会话拒绝**（`E_CHILD_SESSION`）：subagent 会话不参与命名。
-- **超长拒绝而非截断**：按 UTF-8 字节校验（上限读 `sessionTitle.config.maxTitleBytes`，当前 80），错误里回传实际字节数，模型自行缩短重试。
-- **幂等**：同标题不追加事件、不重复 pin。
-- **pin 语义**：写入 `source: user` 后，fallback / LLM 自动标题都不再覆盖，直到显式 `refresh()`（本插件暂未提供）。
+- **Current Session Scoped**: Always operates strictly on the calling agent's session (`exec.agent.session`). It does not accept arbitrary session IDs and cannot modify other sessions.
+- **Child Session Rejection (`E_CHILD_SESSION`)**: Child sessions (subagents where `session.header.parentSession` is present) are explicitly rejected. Subagents do not participate in session naming.
+- **Strict Byte Limit Check (`E_TITLE_TOO_LONG`)**: Reads the runtime byte limit from `ctx.sessionTitle.config.maxTitleBytes` (defaults to 80). If the title exceeds the UTF-8 byte limit, the call fails with `E_TITLE_TOO_LONG` and reports both the actual and maximum byte counts. The title is never silently truncated, allowing the agent to shorten it and retry.
+- **Error Codes**: Throws structured `[E_CODE] message` errors, surfaced to the model as `isError` tool results:
+  - `E_SERVICE_UNAVAILABLE`: `ctx.sessionTitle` is missing.
+  - `E_NO_AGENT`: Invoked outside an active agent session (`exec.agent.session` missing).
+  - `E_CHILD_SESSION`: Called from a child/subagent session.
+  - `E_EMPTY_TITLE`: `title` is not a string, empty, whitespace-only, or sanitizes to nothing (`SessionTitleInvalidError`).
+  - `E_TITLE_TOO_LONG`: UTF-8 byte length exceeds `maxTitleBytes`.
+  - `E_SESSION_NOT_LIVE`: Session is not live in the store (`rename()` throws).
+- **Idempotency**: Submitting a title identical to the current one returns `{ unchanged: true, current: title }` without emitting events, changing `source`, or invoking `rename()`.
+- **Pin Semantics**: Renaming sets `source: user`. DSH treats user titles as pinned; automatic title generation stops permanently for that session unless explicitly reset via `refresh()` (not exposed by this plugin).
 
-## 安装
+## Installation
 
-需要 Windows + PowerShell（5.1 或 7 均可），默认装到 `%USERPROFILE%\.dsh\profiles\desktop`：
+Requirements: Windows with PowerShell 5.1 or PowerShell 7+. The default profile path is `%USERPROFILE%\.dsh\profiles\desktop`.
 
 ```powershell
-# 预览，零写入
+# 1. Dry run: preview planned actions without writing any files
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -WhatIf
 
-# 安装（备份 patch + staging 替换 + 校验）
+# 2. Install: backs up cordis.patch.yml, stages package copy, and updates patch file atomically
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
 
-# 回滚（无安全备份时拒绝并保留一切）
+# 3. Rollback: restores the latest safe backup and removes the package directory
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Rollback
 ```
 
-安装或回滚后需要**重启 DSH Desktop** 生效。
+> **Note**: You must **restart DSH Desktop** after installing or rolling back for changes to take effect.
 
-参数：`-ProfilePath <dir>` 指定其它 profile，`-SourcePath <dir>` 指定包源，`-Force` 覆盖已有安装。
+### Installer Parameters
 
-## 验证
+- `-WhatIf`: Dry run. Validates preflight conditions and prints planned actions without modifying files.
+- `-Rollback`: Restores the newest safe `cordis.patch.yml.bak.*` and removes the package directory. Refuses to delete anything if no safe backup exists.
+- `-Force`: Refreshes an existing package directory instead of skipping the copy.
+- `-ProfilePath <path>`: Specifies a custom DSH profile path (defaults to `%USERPROFILE%\.dsh\profiles\desktop`).
+- `-SourcePath <path>`: Specifies a custom plugin source directory (defaults to `..\src`).
 
-纯 Node，不需要启动 DSH：
+## Verification
+
+No active DSH instance is required for local testing:
 
 ```powershell
+# Syntax validation
 node --check src/lib/index.js
+node --check test/smoke.mjs
+
+# Run the 30-case smoke test suite
 node test/smoke.mjs
 ```
 
-`smoke.mjs` 用 `module.registerHooks` 把 `@deepseek-ai/dsh-tools` 重定向到内存 stub，捕获**原始**工具定义并用内置的 author-schema linter 校验（DSH 的 `defineTool` 在注册时立即编译 schema，写错会直接让插件加载失败），覆盖 30 项：schema 合规、字节校验、幂等、子会话、服务缺失、安装脚本的 YAML 插入 / 编码 / 回滚 / 覆盖安装失败等。
+`test/smoke.mjs` intercepts `@deepseek-ai/dsh-tools` via Node's `module.registerHooks` using an in-memory stub. It captures raw author definitions before runtime compilation and lints them against author-schema DSL rules. The 30 tests cover:
+- Tool definitions and parameter/output schemas.
+- Prompt section registration (order `2305`) and dynamic visibility gating.
+- Setting titles, byte length limits, empty title validation, idempotency, and child session rejection.
+- Absence of `sessionTitle` or `agent.session`.
+- Reading titles and source kinds (`fallback`, `provider`, `user`, or `null`).
+- Installer correctness: `-WhatIf` zero-write guarantee, idempotent re-runs, safe rollback, sibling key (`after:`) and comment preservation, atomic staging swap, rollback rejection without safe backups, and UTF-8 encoding fidelity without BOM under Windows PowerShell 5.1.
 
-## 已知限制
+### Continuous Integration
 
-- **pnpm 清理**：profile 由 pnpm 管理（`nodeLinker: hoisted`）。在 DSH 里增删插件可能触发 `pnpm install`，清掉手装的包目录，导致下次启动找不到插件。改动插件列表后重跑 `install.ps1` 即可；起不来先 `-Rollback`。
-- **pin 不可逆**：设过标题后自动标题停止更新，本版本没有 `refresh` 工具（后续可加 `refresh_session_title`）。
-- **80 字节上限**：约 25 个汉字；50 字符约束对纯中文场景不生效（字节先到上限）。
-- **子会话不支持**：subagent 会话固定跳过。
+The GitHub Actions workflow (`.github/workflows/ci.yml`) runs on `windows-latest` with Node 24. It executes:
+1. Syntax checks on `src/lib/index.js` and `test/smoke.mjs`.
+2. The full 30-case smoke test suite (`node test/smoke.mjs`).
+3. An installer dry-run verification (`install.ps1 -WhatIf`) on a temporary profile to prove zero filesystem mutations.
 
-## 仓库结构
+## Known Limitations
+
+- **Irreversible Pinning**: Setting a title pins it (`source: user`). Automatic title updates cease permanently for that session. This version does not provide a `refresh` tool.
+- **80-Byte Ceiling**: Roughly 25 Chinese characters. For CJK text the 80-byte ceiling binds first, so the 50-character cap in the convention rarely comes into play.
+- **pnpm Pruning**: Profile dependencies are managed by pnpm with `nodeLinker: hoisted`. Adding or removing plugins through the DSH UI can trigger `pnpm install`, which may remove hand-installed package directories and cause startup failures. If this occurs, re-run `install.ps1`, or run `install.ps1 -Rollback` if the application fails to launch.
+- **Child Sessions Skipped**: Child agent sessions cannot set or change titles (`E_CHILD_SESSION`).
+
+## Repository Structure
 
 ```
-src/
-  package.json          # @deepseek-ai/dsh-tool-session-title
-  lib/index.js          # 插件入口：两个工具 + 一个提示词段
-  README.md             # 包级说明
-scripts/install.ps1     # 安装 / 回滚（PS 5.1 + 7）
-test/smoke.mjs          # 30 项冒烟测试
-.github/workflows/ci.yml  # Windows runner：语法检查 + 冒烟 + 安装 dry-run
-REQUIREMENTS.md         # 需求基线
-design/                 # 设计、schema 规则、修复记录
-LICENSE                 # MIT
+├── .github/workflows/ci.yml  # CI workflow: syntax, smoke tests, and dry-run check
+├── design/                   # Design specifications, DSL rules, and review notes
+│   ├── DESIGN.md             # Baseline design and architectural decisions
+│   ├── FIX-NOTES.md          # Review fix logs
+│   ├── LEAD-NOTES.md         # Architecture review and lead feedback
+│   └── SCHEMA-RULES.md       # DSH author-schema DSL constraints
+├── scripts/
+│   └── install.ps1           # Transactional installer and rollback script (PS 5.1 / 7+)
+├── src/
+│   ├── lib/
+│   │   └── index.js          # Plugin entry point: tool definitions and prompt section
+│   ├── package.json          # Plugin manifest (@deepseek-ai/dsh-tool-session-title)
+│   └── README.md             # Package-level documentation
+├── test/
+│   └── smoke.mjs             # 30-case standalone smoke test and schema linter
+├── LICENSE                   # MIT License
+└── REQUIREMENTS.md           # Requirements baseline and verified DSH API facts
 ```
 
-## 设计文档
+## Design Documentation
 
-- [REQUIREMENTS.md](REQUIREMENTS.md) — 需求、验收标准、已验证的 DSH API 事实
-- [design/DESIGN.md](design/DESIGN.md) — 架构与 D1–D8 决策
-- [design/SCHEMA-RULES.md](design/SCHEMA-RULES.md) — DSH 工具 schema 作者 DSL 的硬规则
-- [design/LEAD-NOTES.md](design/LEAD-NOTES.md)、[design/FIX-NOTES.md](design/FIX-NOTES.md) — 评审后的修订与修复清单
+- [REQUIREMENTS.md](REQUIREMENTS.md) — Functional requirements, acceptance criteria, and verified DSH runtime APIs.
+- [design/DESIGN.md](design/DESIGN.md) — Architecture, execution pipeline, and design decisions D1–D8.
+- [design/SCHEMA-RULES.md](design/SCHEMA-RULES.md) — Hard author-schema rules for DSH `defineTool`.
+- [design/LEAD-NOTES.md](design/LEAD-NOTES.md) — Architectural feedback and review amendments.
+- [design/FIX-NOTES.md](design/FIX-NOTES.md) — Specific issues addressed during implementation.
 
 ## License
 
