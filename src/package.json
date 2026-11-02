@@ -1,0 +1,23 @@
+{
+  "name": "@deepseek-ai/dsh-tool-session-title",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DSH plugin: let the agent set and read its own session title, with a naming-convention prompt section.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "*"
+  },
+  "license": "UNLICENSED"
+}
