@@ -46,11 +46,11 @@ jobs:
         run: |
           $tmp = Join-Path $env:RUNNER_TEMP ('profile-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
           New-Item -ItemType Directory -Force (Join-Path $tmp 'node_modules\@deepseek-ai') | Out-Null
-          $patch = @'
-- insert:
-    - id: existing
-      name: "existing-package"
-'@
+          $patch = @(
+            '- insert:',
+            '    - id: existing',
+            '      name: "existing-package"'
+          ) -join "`n"
           $patchFile = Join-Path $tmp 'cordis.patch.yml'
           [System.IO.File]::WriteAllText($patchFile, $patch, (New-Object System.Text.UTF8Encoding($false)))
           $before = (Get-FileHash -LiteralPath $patchFile).Hash
